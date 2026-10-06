@@ -4,78 +4,48 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>drand Explorer</title>
-    <link rel="stylesheet" href="/style.css" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="style.css" />
+    <script>
+      // Apply the saved theme before first paint to avoid a flash.
+      try {
+        const t = JSON.parse(localStorage.getItem('drand-explorer:v1') || '{}').theme;
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
   </head>
   <body>
-    <header class="header">
-      <div>
-        <h1>drand Explorer</h1>
-        <p>Real-time v2 beacon browsing across all published chains.</p>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">◈</span>
+        <div>
+          <h1>drand Explorer</h1>
+          <p>Distributed randomness beacons</p>
+        </div>
       </div>
       <div class="controls">
-        <label for="outputMode">Copy format</label>
-        <select id="outputMode">
-          <option value="url">URL</option>
-          <option value="cli">CLI</option>
-          <option value="curl">cURL</option>
-        </select>
+        <label>
+          <span>Copy as</span>
+          <select id="outputMode">
+            <option value="url">URL</option>
+            <option value="curl">cURL</option>
+            <option value="cli">wget</option>
+          </select>
+        </label>
+        <button type="button" id="themeToggle" class="icon-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
       </div>
     </header>
 
-    <main>
-      <p id="status" class="status">Loading chains…</p>
-      <section id="chainGrid" class="chain-grid"></section>
-    </main>
+    <div class="statusbar" id="status" role="status">Loading beacons…</div>
 
-    <template id="chainTemplate">
-      <article class="chain-card">
-        <header class="chain-card__header">
-          <h2 data-field="name"></h2>
-          <span class="pill" data-field="healthStatus"></span>
-        </header>
+    <div class="layout">
+      <nav class="sidebar" aria-label="Beacons">
+        <h2>Beacons</h2>
+        <ul id="beaconList" class="beacon-list"></ul>
+      </nav>
+      <main id="detail" class="detail" aria-live="polite"></main>
+    </div>
 
-        <div class="row"><strong>Chain hash:</strong> <code data-field="hash"></code></div>
-        <div class="row"><strong>Period:</strong> <span data-field="period"></span></div>
-        <div class="row"><strong>Scheme:</strong> <code data-field="scheme"></code></div>
-        <div class="row"><strong>Beacon ID:</strong> <code data-field="beaconId"></code></div>
-        <div class="row"><strong>Public key:</strong> <code data-field="publicKey"></code></div>
-
-        <section class="subpanel">
-          <h3>Health</h3>
-          <div class="row"><strong>Current:</strong> <span data-field="healthCurrent">—</span></div>
-          <div class="row"><strong>Expected:</strong> <span data-field="healthExpected">—</span></div>
-        </section>
-
-        <section class="subpanel">
-          <h3>Latest round</h3>
-          <div class="row"><strong>Round:</strong> <span data-field="latestRound">—</span></div>
-          <div class="row"><strong>Randomness:</strong> <code class="break-all" data-field="latestRandomness">—</code></div>
-          <div class="row"><strong>Signature:</strong> <code class="break-all" data-field="latestSignature">—</code></div>
-          <div class="row"><strong>Round time:</strong> <span data-field="latestTime">—</span></div>
-          <div class="row"><strong>Next round:</strong> <span data-field="countdown">—</span></div>
-        </section>
-
-        <section class="subpanel">
-          <h3>Browse historical rounds</h3>
-          <div class="history-controls">
-            <button type="button" data-action="prevRound">◀</button>
-            <input type="number" min="1" step="1" data-field="historyInput" aria-label="Round number" />
-            <button type="button" data-action="loadRound">Load</button>
-            <button type="button" data-action="nextRound">▶</button>
-          </div>
-          <div class="row"><strong>Round:</strong> <span data-field="historyRound">—</span></div>
-          <div class="row"><strong>Randomness:</strong> <code class="break-all" data-field="historyRandomness">—</code></div>
-          <div class="row"><strong>Signature:</strong> <code class="break-all" data-field="historySignature">—</code></div>
-          <div class="row"><strong>Time:</strong> <span data-field="historyTime">—</span></div>
-        </section>
-
-        <section class="subpanel">
-          <h3>Quick command</h3>
-          <ul class="commands" data-field="commands"></ul>
-        </section>
-      </article>
-    </template>
-
-    <script src="/app.js" defer></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>

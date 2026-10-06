@@ -1,386 +1,349 @@
-const API_BASE = 'https://api.drand.sh/v2';
+import {
+  beaconUrl,
+  expectedRound,
+  fetchBeaconSummary,
+  fetchJson,
+  parseBeaconIds,
+  roundTime,
+  API_BASE
+} from './drand.js';
 
-const statusEl = document.getElementById('status');
-const chainGridEl = document.getElementById('chainGrid');
-const chainTemplate = document.getElementById('chainTemplate');
-const outputModeEl = document.getElementById('outputMode');
+const STORE_KEY = 'drand-explorer:v1';
+
+const $ = (id) => document.getElementById(id);
+const statusEl = $('status');
+const listEl = $('beaconList');
+const detailEl = $('detail');
+const outputModeEl = $('outputMode');
+
+// ---- persisted per-browser state -------------------------------------------------------
+const saved = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(STORE_KEY)) || {};
+  } catch {
+    return {};
+  }
+})();
 
 const state = {
-  outputMode: 'url',
-  chains: []
+  beacons: Array.isArray(saved.beacons) ? saved.beacons : [],
+  selected: saved.selected || null,
+  history: saved.history || {}, // beacon id -> round being browsed
+  outputMode: saved.outputMode || 'url',
+  theme: saved.theme || 'auto',
+  savedAt: saved.savedAt || null,
+  historyData: null // { id, round, data | error }
 };
 
-function endpointFor(hash, resource) {
-  return `${API_BASE}/chains/${hash}${resource}`;
-}
-
-function formatTime(tsSeconds) {
-  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) {
-    return '—';
-  }
-  return new Date(tsSeconds * 1000).toLocaleString();
-}
-
-function toPositiveInt(value) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function buildCommand(url) {
-  switch (state.outputMode) {
-    case 'curl':
-      return `curl -s "${url}"`;
-    case 'cli':
-      return `wget -qO- "${url}"`;
-    case 'url':
-    default:
-      return url;
-  }
-}
-
-function classifyHealth(health) {
-  const current = Number(health?.current);
-  const expected = Number(health?.expected);
-
-  if (!Number.isFinite(current) || !Number.isFinite(expected)) {
-    return { text: 'Unknown', className: 'warning' };
-  }
-
-  const delta = expected - current;
-  if (delta <= 0) {
-    return { text: 'Healthy', className: 'healthy' };
-  }
-
-  if (delta === 1) {
-    return { text: 'Slightly behind', className: 'warning' };
-  }
-
-  return { text: `Behind by ${delta}`, className: 'unhealthy' };
-}
-
-async function fetchJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed ${response.status} for ${url}`);
-  }
-  return response.json();
-}
-
-function estimateNextRoundTime(chain) {
-  const period = Number(chain.info?.period);
-  const latestRound = Number(chain.latest?.round);
-  const genesis = Number(chain.info?.genesis_time);
-
-  if (!Number.isFinite(period) || period <= 0) {
-    return null;
-  }
-
-  if (Number.isFinite(genesis) && genesis > 0 && Number.isFinite(latestRound) && latestRound > 0) {
-    return genesis + (latestRound + 1) * period;
-  }
-
-  return Math.floor(Date.now() / 1000) + period;
-}
-
-function scrambleToValue(el, finalValue) {
-  if (!el) {
-    return;
-  }
-
-  const chars = 'abcdef0123456789';
-  const target = String(finalValue || '—');
-  let frame = 0;
-  const maxFrames = 6;
-
-  el.classList.add('scramble');
-  const id = window.setInterval(() => {
-    frame += 1;
-    if (frame >= maxFrames) {
-      window.clearInterval(id);
-      el.textContent = target;
-      el.classList.remove('scramble');
-      return;
-    }
-
-    const scrambled = target
-      .split('')
-      .map((char) => {
-        if (!/[a-f0-9]/i.test(char)) {
-          return char;
-        }
-        return chars[Math.floor(Math.random() * chars.length)];
-      })
-      .join('');
-    el.textContent = scrambled;
-  }, 50);
-}
-
-function renderCommands(chain, historyRound) {
-  const endpoints = [
-    { label: 'Chain info', url: endpointFor(chain.hash, '') },
-    { label: 'Health', url: endpointFor(chain.hash, '/health') },
-    { label: 'Latest', url: endpointFor(chain.hash, '/rounds/latest') },
-    {
-      label: `Round ${historyRound || Number(chain.latest?.round) || '?'}`,
-      url: endpointFor(chain.hash, `/rounds/${historyRound || Number(chain.latest?.round) || 'latest'}`)
-    }
-  ];
-
-  return endpoints;
-}
-
-function updateCountdown(chain) {
-  if (!chain.elements?.countdown) {
-    return;
-  }
-
-  const nextTs = estimateNextRoundTime(chain);
-  if (!nextTs) {
-    chain.elements.countdown.textContent = 'Unknown';
-    return;
-  }
-
-  const nowTs = Math.floor(Date.now() / 1000);
-  const remaining = Math.max(0, nextTs - nowTs);
-  const minutes = Math.floor(remaining / 60);
-  const seconds = remaining % 60;
-  chain.elements.countdown.textContent = `${minutes}:${String(seconds).padStart(2, '0')}`;
-
-  if (remaining === 0 && !chain.refreshingLatest) {
-    chain.refreshingLatest = true;
-    refreshLatest(chain)
-      .catch((error) => {
-        console.error(error);
-      })
-      .finally(() => {
-        chain.refreshingLatest = false;
-      });
-  }
-}
-
-function fillField(parent, field, value) {
-  const el = parent.querySelector(`[data-field="${field}"]`);
-  if (el) {
-    el.textContent = value;
-  }
-  return el;
-}
-
-function renderCommandList(chain) {
-  const listEl = chain.elements?.commands;
-  if (!listEl) {
-    return;
-  }
-
-  listEl.innerHTML = '';
-  const historyRound = toPositiveInt(chain.elements.historyInput?.value) || Number(chain.latest?.round);
-
-  for (const endpoint of renderCommands(chain, historyRound)) {
-    const li = document.createElement('li');
-
-    const label = document.createElement('span');
-    label.className = 'label';
-    label.textContent = endpoint.label;
-
-    const code = document.createElement('code');
-    code.textContent = buildCommand(endpoint.url);
-
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.className = 'copy-btn';
-    copyBtn.textContent = 'Copy';
-    copyBtn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(code.textContent || '');
-        copyBtn.textContent = 'Copied';
-        window.setTimeout(() => {
-          copyBtn.textContent = 'Copy';
-        }, 1000);
-      } catch {
-        copyBtn.textContent = 'Denied';
-      }
-    });
-
-    li.append(label, code, copyBtn);
-    listEl.appendChild(li);
-  }
-}
-
-async function loadHistorical(chain, round) {
-  if (!round) {
-    return;
-  }
-
+function persist() {
   try {
-    const data = await fetchJson(endpointFor(chain.hash, `/rounds/${round}`));
-    fillField(chain.elements.card, 'historyRound', data.round ?? '—');
-    fillField(chain.elements.card, 'historyRandomness', data.randomness ?? '—');
-    fillField(chain.elements.card, 'historySignature', data.signature ?? '—');
-    fillField(chain.elements.card, 'historyTime', formatTime(data.round_timestamp || data.timestamp));
-    renderCommandList(chain);
+    const { beacons, selected, history, outputMode, theme } = state;
+    localStorage.setItem(STORE_KEY, JSON.stringify({ beacons, selected, history, outputMode, theme, savedAt: state.savedAt }));
+  } catch {
+    /* storage unavailable or full: the app still works */
+  }
+}
+
+// ---- helpers ---------------------------------------------------------------------------
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const fmtTime = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : '—');
+const short = (h, n = 10) => (h && h.length > 2 * n + 1 ? `${h.slice(0, n)}…${h.slice(-n)}` : h || '—');
+const byId = (id) => state.beacons.find((b) => b.id === id);
+const selectedBeacon = () => byId(state.selected);
+
+function health(b) {
+  const cur = b.latest?.round;
+  const exp = expectedRound(b);
+  if (!cur || !exp) return { text: 'Unknown', cls: 'warn' };
+  const behind = exp - cur;
+  if (behind <= 1) return { text: 'Healthy', cls: 'ok' };
+  if (behind <= 3) return { text: `Behind ${behind}`, cls: 'warn' };
+  return { text: `Behind ${behind}`, cls: 'bad' };
+}
+
+function command(url) {
+  if (state.outputMode === 'curl') return `curl -s "${url}"`;
+  if (state.outputMode === 'cli') return `wget -qO- "${url}"`;
+  return url;
+}
+
+function setStatus(text, cls = '') {
+  statusEl.textContent = text;
+  statusEl.className = `statusbar ${cls}`;
+}
+
+// ---- rendering -------------------------------------------------------------------------
+function renderList() {
+  listEl.innerHTML = state.beacons
+    .map((b) => {
+      const h = health(b);
+      return `<li><button type="button" class="beacon-item${b.id === state.selected ? ' active' : ''}" data-id="${esc(b.id)}">
+        <span class="dot ${h.cls}" title="${esc(h.text)}"></span>
+        <span class="beacon-name">${esc(b.id)}</span>
+        <span class="beacon-meta">${b.period ? `${b.period}s` : ''}${b.latest?.round ? ` · #${b.latest.round}` : ''}</span>
+      </button></li>`;
+    })
+    .join('');
+}
+
+function copyRow(label, value, { raw = false } = {}) {
+  return `<div class="kv"><span class="k">${esc(label)}</span><code class="v${raw ? ' wrap' : ''}">${esc(value || '—')}</code>${
+    value ? `<button type="button" class="copy" data-copy="${esc(value)}">Copy</button>` : ''
+  }</div>`;
+}
+
+function renderHistoryResult(b) {
+  const h = state.historyData;
+  const round = state.history[b.id];
+  if (!h || h.id !== b.id || h.round !== round) {
+    return '<p class="muted">Press Load to fetch this round.</p>';
+  }
+  if (h.error) return `<p class="error">Round ${round} not available (${esc(h.error)}).</p>`;
+  return `${copyRow('Randomness', h.data.randomness, { raw: true })}
+    ${copyRow('Signature', h.data.signature, { raw: true })}
+    <div class="kv"><span class="k">Time</span><span class="v">${fmtTime(roundTime(b, round))}</span></div>`;
+}
+
+function renderCommands(b) {
+  const round = state.history[b.id] || b.latest?.round || 'latest';
+  const eps = [
+    ['Info', beaconUrl(b.id, '/info')],
+    ['Latest', beaconUrl(b.id, '/rounds/latest')],
+    [`Round ${round}`, beaconUrl(b.id, `/rounds/${round}`)]
+  ];
+  return eps
+    .map(([label, url]) => `<div class="kv"><span class="k">${esc(label)}</span><code class="v wrap">${esc(command(url))}</code>
+      <button type="button" class="copy" data-copy="${esc(command(url))}">Copy</button></div>`)
+    .join('');
+}
+
+function renderDetail() {
+  const b = selectedBeacon();
+  if (!b) {
+    detailEl.innerHTML = '<div class="empty">Select a beacon to explore its rounds.</div>';
+    return;
+  }
+  const h = health(b);
+  const histRound = state.history[b.id] || b.latest?.round || 1;
+  detailEl.innerHTML = `
+    <section class="card hero">
+      <div class="hero-head">
+        <h2>${esc(b.id)}</h2>
+        <span class="pill ${h.cls}">${esc(h.text)}</span>
+      </div>
+      <dl class="stats">
+        <div><dt>Period</dt><dd>${b.period ? `${b.period}s` : '—'}</dd></div>
+        <div><dt>Scheme</dt><dd>${esc(b.scheme || '—')}</dd></div>
+        <div><dt>Genesis</dt><dd>${fmtTime(b.genesisTime)}</dd></div>
+        <div><dt>Next round in</dt><dd id="countdown">—</dd></div>
+      </dl>
+      ${copyRow('Chain hash', b.hash, { raw: true })}
+      ${copyRow('Public key', b.publicKey, { raw: true })}
+    </section>
+
+    <section class="card">
+      <h3>Latest round <span class="round-no" id="latestNo">${b.latest?.round ? `#${b.latest.round}` : ''}</span></h3>
+      <div id="latestBody">
+        ${copyRow('Randomness', b.latest?.randomness, { raw: true })}
+        ${copyRow('Signature', b.latest?.signature, { raw: true })}
+        <div class="kv"><span class="k">Time</span><span class="v">${fmtTime(roundTime(b, b.latest?.round))}</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Browse history</h3>
+      <div class="history-controls">
+        <button type="button" data-action="prev" aria-label="Previous round">◀</button>
+        <input type="number" id="historyInput" min="1" step="1" value="${histRound}" aria-label="Round number" />
+        <button type="button" data-action="next" aria-label="Next round">▶</button>
+        <button type="button" class="primary" data-action="load">Load</button>
+        <button type="button" data-action="latest">Latest</button>
+      </div>
+      <div id="historyBody">${renderHistoryResult(b)}</div>
+    </section>
+
+    <section class="card">
+      <h3>API endpoints</h3>
+      <div id="commands">${renderCommands(b)}</div>
+    </section>`;
+  updateCountdown();
+}
+
+function renderAll() {
+  renderList();
+  renderDetail();
+}
+
+function updateCountdown() {
+  const el = $('countdown');
+  const b = selectedBeacon();
+  if (!el || !b || !b.period || !b.genesisTime) return;
+  const next = b.genesisTime + expectedRound(b) * b.period;
+  const left = Math.max(0, Math.ceil(next - Date.now() / 1000));
+  el.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+  if (b.latest?.round < expectedRound(b) && !b.refreshing && Date.now() - (b.lastTry || 0) > 3000) {
+    b.refreshing = true;
+    b.lastTry = Date.now();
+    refreshLatest(b).finally(() => (b.refreshing = false));
+  }
+}
+
+// ---- data ------------------------------------------------------------------------------
+async function refreshLatest(b) {
+  try {
+    const data = await fetchJson(beaconUrl(b.id, '/rounds/latest'));
+    b.latest = { round: Number(data.round) || 0, randomness: data.randomness || '', signature: data.signature || '' };
+    state.savedAt = Date.now();
+    persist();
+    renderList();
+    if (b.id === state.selected) renderDetail();
   } catch (error) {
-    fillField(chain.elements.card, 'historyRound', 'Not found');
-    fillField(chain.elements.card, 'historyRandomness', '—');
-    fillField(chain.elements.card, 'historySignature', '—');
-    fillField(chain.elements.card, 'historyTime', '—');
     console.error(error);
   }
 }
 
-async function refreshLatest(chain) {
-  const latest = await fetchJson(endpointFor(chain.hash, '/rounds/latest'));
-  const previousRound = Number(chain.latest?.round);
-
-  chain.latest = latest;
-
-  if (chain.elements?.latestRound) {
-    chain.elements.latestRound.textContent = String(latest.round ?? '—');
-  }
-
-  if (Number(latest.round) !== previousRound) {
-    scrambleToValue(chain.elements.latestRandomness, latest.randomness ?? '—');
-    scrambleToValue(chain.elements.latestSignature, latest.signature ?? '—');
-  } else {
-    fillField(chain.elements.card, 'latestRandomness', latest.randomness ?? '—');
-    fillField(chain.elements.card, 'latestSignature', latest.signature ?? '—');
-  }
-
-  fillField(chain.elements.card, 'latestTime', formatTime(latest.round_timestamp || latest.timestamp));
-  renderCommandList(chain);
+function merge(fresh) {
+  // Keep cached values for anything the fresh fetch could not provide.
+  const old = byId(fresh.id) || {};
+  return { ...old, ...fresh, latest: fresh.latest || old.latest };
 }
 
-function attachHistoryHandlers(chain) {
-  const { card, historyInput } = chain.elements;
-
-  const loadCurrent = () => {
-    const round = toPositiveInt(historyInput.value);
-    if (!round) {
-      return;
-    }
-    loadHistorical(chain, round);
-  };
-
-  card.querySelector('[data-action="loadRound"]')?.addEventListener('click', loadCurrent);
-  historyInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      loadCurrent();
-    }
-  });
-
-  card.querySelector('[data-action="prevRound"]')?.addEventListener('click', () => {
-    const current = toPositiveInt(historyInput.value) || 1;
-    historyInput.value = String(Math.max(1, current - 1));
-    loadCurrent();
-  });
-
-  card.querySelector('[data-action="nextRound"]')?.addEventListener('click', () => {
-    const current = toPositiveInt(historyInput.value) || 1;
-    historyInput.value = String(current + 1);
-    loadCurrent();
-  });
-}
-
-function renderChainCard(chain, index) {
-  const fragment = chainTemplate.content.cloneNode(true);
-  const card = fragment.querySelector('.chain-card');
-
-  const period = Number(chain.info?.period);
-  const healthClass = classifyHealth(chain.health);
-
-  fillField(card, 'name', chain.info?.metadata?.beacon_name || chain.info?.beacon_id || `Chain ${index + 1}`);
-  fillField(card, 'hash', chain.hash);
-  fillField(card, 'period', Number.isFinite(period) ? `${period}s` : 'Unknown');
-  fillField(card, 'scheme', chain.info?.schemeID || chain.info?.scheme_id || 'Unknown');
-  fillField(card, 'beaconId', chain.info?.beaconID || chain.info?.beacon_id || 'default');
-  fillField(card, 'publicKey', chain.info?.public_key || chain.info?.publicKey || 'Unknown');
-
-  fillField(card, 'healthCurrent', chain.health?.current ?? '—');
-  fillField(card, 'healthExpected', chain.health?.expected ?? '—');
-
-  const healthStatus = fillField(card, 'healthStatus', healthClass.text);
-  if (healthStatus) {
-    healthStatus.classList.add(healthClass.className);
-  }
-
-  const latestRound = fillField(card, 'latestRound', chain.latest?.round ?? '—');
-  const latestRandomness = fillField(card, 'latestRandomness', chain.latest?.randomness ?? '—');
-  const latestSignature = fillField(card, 'latestSignature', chain.latest?.signature ?? '—');
-  fillField(card, 'latestTime', formatTime(chain.latest?.round_timestamp || chain.latest?.timestamp));
-
-  const historyInput = card.querySelector('[data-field="historyInput"]');
-  historyInput.value = String(chain.latest?.round || 1);
-  fillField(card, 'historyRound', chain.latest?.round ?? '—');
-  fillField(card, 'historyRandomness', chain.latest?.randomness ?? '—');
-  fillField(card, 'historySignature', chain.latest?.signature ?? '—');
-  fillField(card, 'historyTime', formatTime(chain.latest?.round_timestamp || chain.latest?.timestamp));
-
-  const commands = card.querySelector('[data-field="commands"]');
-
-  chain.elements = {
-    card,
-    latestRound,
-    latestRandomness,
-    latestSignature,
-    historyInput,
-    countdown: card.querySelector('[data-field="countdown"]'),
-    commands
-  };
-
-  attachHistoryHandlers(chain);
-  renderCommandList(chain);
-  updateCountdown(chain);
-
-  return fragment;
-}
-
-async function loadChains() {
-  statusEl.textContent = 'Loading chains…';
-  chainGridEl.innerHTML = '';
-
+async function loadStaticCache() {
   try {
-    const chainsData = await fetchJson(`${API_BASE}/chains`);
-    const chains = Array.isArray(chainsData?.chains) ? chainsData.chains : [];
-
-    const fullChains = await Promise.all(
-      chains.map(async (hash) => {
-        const [info, health, latest] = await Promise.allSettled([
-          fetchJson(endpointFor(hash, '')),
-          fetchJson(endpointFor(hash, '/health')),
-          fetchJson(endpointFor(hash, '/rounds/latest'))
-        ]);
-
-        return {
-          hash,
-          info: info.status === 'fulfilled' ? info.value : {},
-          health: health.status === 'fulfilled' ? health.value : {},
-          latest: latest.status === 'fulfilled' ? latest.value : {}
-        };
-      })
-    );
-
-    state.chains = fullChains;
-
-    fullChains.forEach((chain, index) => {
-      chainGridEl.appendChild(renderChainCard(chain, index));
-    });
-
-    statusEl.textContent = `Loaded ${fullChains.length} chain${fullChains.length === 1 ? '' : 's'}.`;
-  } catch (error) {
-    statusEl.textContent = `Failed to load chains: ${error.message}`;
+    const data = await fetchJson('data/beacons.json');
+    if (Array.isArray(data.beacons) && data.beacons.length && !state.beacons.length) {
+      state.beacons = data.beacons;
+      setStatus(`Showing deploy-time cache from ${new Date(data.generatedAt).toLocaleString()} — refreshing…`);
+      afterBeaconsChanged();
+    }
+  } catch {
+    /* no bundled cache (e.g. local dev) */
   }
 }
+
+function afterBeaconsChanged() {
+  if (!byId(state.selected)) state.selected = state.beacons[0]?.id || null;
+  persist();
+  renderAll();
+}
+
+async function refreshBeacons() {
+  try {
+    const ids = parseBeaconIds(await fetchJson(`${API_BASE}/beacons`));
+    if (!ids.length) throw new Error('empty beacon list');
+    const results = await Promise.allSettled(ids.map(fetchBeaconSummary));
+    state.beacons = ids.map((id, i) => (results[i].status === 'fulfilled' ? merge(results[i].value) : byId(id) || { id }));
+    state.savedAt = Date.now();
+    afterBeaconsChanged();
+    setStatus(`${ids.length} beacons · live data updated ${new Date().toLocaleTimeString()}`, 'ok');
+  } catch (error) {
+    console.error(error);
+    setStatus(
+      state.beacons.length
+        ? `Offline or API unavailable — showing cached data (${error.message})`
+        : `Could not load beacons: ${error.message}`,
+      'bad'
+    );
+  }
+}
+
+async function loadHistory(b) {
+  const round = state.history[b.id];
+  if (!round) return;
+  try {
+    const data = await fetchJson(beaconUrl(b.id, `/rounds/${round}`));
+    state.historyData = { id: b.id, round, data };
+  } catch (error) {
+    state.historyData = { id: b.id, round, error: error.message };
+  }
+  if (b.id === state.selected && state.history[b.id] === round) {
+    $('historyBody').innerHTML = renderHistoryResult(b);
+    $('commands').innerHTML = renderCommands(b);
+  }
+}
+
+function setHistoryRound(b, round, { load = true } = {}) {
+  const n = Math.max(1, Math.floor(Number(round)) || 1);
+  state.history[b.id] = n;
+  $('historyInput').value = n;
+  persist();
+  if (load) loadHistory(b);
+  else $('commands').innerHTML = renderCommands(b);
+}
+
+// ---- events ----------------------------------------------------------------------------
+listEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-id]');
+  if (!btn) return;
+  state.selected = btn.dataset.id;
+  persist();
+  renderAll();
+  if (state.history[state.selected]) loadHistory(selectedBeacon());
+  if (window.matchMedia('(max-width: 800px)').matches) detailEl.scrollIntoView({ behavior: 'smooth' });
+});
+
+detailEl.addEventListener('click', async (e) => {
+  const b = selectedBeacon();
+  const copy = e.target.closest('[data-copy]');
+  if (copy) {
+    try {
+      await navigator.clipboard.writeText(copy.dataset.copy);
+      copy.textContent = 'Copied';
+    } catch {
+      copy.textContent = 'Denied';
+    }
+    setTimeout(() => (copy.textContent = 'Copy'), 1000);
+    return;
+  }
+  const action = e.target.closest('[data-action]')?.dataset.action;
+  if (!action || !b) return;
+  const current = Number($('historyInput').value) || b.latest?.round || 1;
+  if (action === 'prev') setHistoryRound(b, current - 1);
+  else if (action === 'next') setHistoryRound(b, current + 1);
+  else if (action === 'load') setHistoryRound(b, current);
+  else if (action === 'latest' && b.latest?.round) setHistoryRound(b, b.latest.round);
+});
+
+detailEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'historyInput') setHistoryRound(selectedBeacon(), e.target.value);
+});
+
+detailEl.addEventListener('change', (e) => {
+  // Remember the round even if the user edits it without loading.
+  if (e.target.id === 'historyInput') setHistoryRound(selectedBeacon(), e.target.value, { load: false });
+});
 
 outputModeEl.addEventListener('change', () => {
   state.outputMode = outputModeEl.value;
-  state.chains.forEach((chain) => {
-    renderCommandList(chain);
-  });
+  persist();
+  const b = selectedBeacon();
+  if (b && $('commands')) $('commands').innerHTML = renderCommands(b);
 });
 
-window.setInterval(() => {
-  state.chains.forEach((chain) => {
-    updateCountdown(chain);
-  });
-}, 1000);
+function applyTheme() {
+  if (state.theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = state.theme;
+}
+$('themeToggle').addEventListener('click', () => {
+  const dark = document.documentElement.dataset.theme
+    ? document.documentElement.dataset.theme === 'dark'
+    : window.matchMedia('(prefers-color-scheme: dark)').matches;
+  state.theme = dark ? 'light' : 'dark';
+  applyTheme();
+  persist();
+});
 
-loadChains();
+// ---- start -----------------------------------------------------------------------------
+outputModeEl.value = state.outputMode;
+applyTheme();
+if (state.beacons.length) {
+  setStatus(`Showing data saved ${new Date(state.savedAt || Date.now()).toLocaleString()} — refreshing…`);
+  afterBeaconsChanged();
+  if (state.history[state.selected]) loadHistory(selectedBeacon());
+} else {
+  renderAll();
+}
+loadStaticCache().then(refreshBeacons);
+setInterval(updateCountdown, 1000);
+// Keep every beacon's latest round in the sidebar fresh.
+setInterval(() => state.beacons.forEach((b) => b.id !== state.selected && refreshLatest(b)), 60000);
