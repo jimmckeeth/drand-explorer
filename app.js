@@ -1,12 +1,12 @@
 import { API_BASE, fetchJson } from './drand.js';
-import { NETWORKS, expectedRound, fetchRound, fetchSummary, listBeacons, networkFor, nextRoundTime, roundTime, urlsFor } from './providers.js';
+import { ALL_NETWORKS, NETWORKS, expectedRound, fetchRound, fetchSummary, listBeacons, networkFor, nextRoundTime, roundTime, urlsFor } from './providers.js';
 
 const STORE_KEY = 'drand-explorer:v1';
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
-const listEl = $('beaconList');
+const sidebarEl = document.querySelector('.sidebar');
 const detailEl = $('detail');
 const outputModeEl = $('outputMode');
 const endpointEl = $('endpointSelect');
@@ -20,41 +20,53 @@ const saved = (() => {
   }
 })();
 
+const OTHERS = ALL_NETWORKS.filter((n) => n.kind !== 'drand'); // NIST, INMETRO: always listed
+const DRAND_GROUPS = NETWORKS.filter((g) => g.items[0].kind === 'drand');
+const LISTS = { drand: $('listDrand'), nist: $('listNist'), inmetro: $('listInmetro') };
+
+const endpoint0 = networkFor(saved.endpoint || API_BASE).kind === 'drand' ? saved.endpoint || API_BASE : API_BASE;
+
 const state = {
-  endpoint: saved.endpoint || API_BASE,
-  // per-endpoint: { beacons, savedAt, selected }
-  data: saved.data || (Array.isArray(saved.beacons) ? { [API_BASE]: { beacons: saved.beacons, savedAt: saved.savedAt, selected: saved.selected } } : {}),
-  history: saved.history || {}, // `${endpoint}|${beaconId}` -> round being browsed
+  endpoint: endpoint0, // the selected drand network
+  // per-network: { beacons, savedAt }
+  data: saved.data || (Array.isArray(saved.beacons) ? { [API_BASE]: { beacons: saved.beacons, savedAt: saved.savedAt } } : {}),
+  sel: saved.sel?.net && saved.sel?.id ? saved.sel : { net: endpoint0, id: 'default' }, // selected beacon
+  history: saved.history || {}, // `${network}|${beaconId}` -> round being browsed
   outputMode: saved.outputMode || 'url',
   theme: saved.theme || 'auto',
+  animate: saved.animate !== false,
   historyData: null,
   historyPending: null
 };
 
+const activeUrls = () => [state.endpoint, ...OTHERS.map((n) => n.url)];
+// Drop a stale selection (e.g. a drand network that is no longer the active one).
+if (!activeUrls().includes(state.sel.net)) state.sel = networkFor(state.sel.net).kind === 'drand' ? { net: state.endpoint, id: state.sel.id } : { net: state.endpoint, id: 'default' };
+
+const netStatus = {}; // url -> { count } | { error }
 const runtime = new Map(); // transient per-beacon flags (never persisted)
-const rt = (b) => {
-  const key = `${state.endpoint}|${b.id}`;
+const rt = (url, b) => {
+  const key = `${url}|${b.id}`;
   if (!runtime.has(key)) runtime.set(key, {});
   return runtime.get(key);
 };
 
-const net = () => networkFor(state.endpoint);
-const store = () => (state.data[state.endpoint] ??= { beacons: [], savedAt: null, selected: null });
-const beacons = () => store().beacons;
-const byId = (id) => beacons().find((b) => b.id === id);
-const selectedBeacon = () => byId(store().selected);
-const histKey = (b) => `${state.endpoint}|${b.id}`;
+const net = () => networkFor(state.sel.net); // network of the selected beacon
+const storeFor = (url) => (state.data[url] ??= { beacons: [], savedAt: null });
+const beaconsFor = (url) => storeFor(url).beacons;
+const selectedBeacon = () => beaconsFor(state.sel.net).find((b) => b.id === state.sel.id);
+const histKey = (b) => `${state.sel.net}|${b.id}`;
 const histRound = (b) => state.history[histKey(b)];
+const cdKey = (url, b) => `${url}|${b.id}`;
 
 function persist() {
   try {
-    const { endpoint, data, history, outputMode, theme } = state;
-    localStorage.setItem(STORE_KEY, JSON.stringify({ endpoint, data, history, outputMode, theme }));
+    const { endpoint, data, sel, history, outputMode, theme, animate } = state;
+    localStorage.setItem(STORE_KEY, JSON.stringify({ endpoint, data, sel, history, outputMode, theme, animate }));
   } catch {
     /* storage unavailable or full: the app still works */
   }
 }
-
 // ---- helpers ---------------------------------------------------------------------------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmtTime = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : '—');
@@ -85,7 +97,7 @@ function command(b, kind, round) {
     case 'wget':
       return { text: `wget -qO- "${url}"`, url };
     case 'cli': {
-      const base = `--url ${state.endpoint.replace(/\/v2$/, '')} --chain-hash ${b.hash || '<chain-hash>'}`;
+      const base = `--url ${state.sel.net.replace(/\/v2$/, '')} --chain-hash ${b.hash || '<chain-hash>'}`;
       return { text: kind === 'info' ? `drand get chain-info ${base}` : `drand get public ${base}${round === 'latest' ? '' : ` --round ${round}`}` };
     }
     default:
@@ -126,26 +138,35 @@ function syncModeControl() {
 }
 
 function renderEndpoints() {
-  const groups = [...NETWORKS];
-  if (!groups.some((g) => g.items.some((n) => n.url === state.endpoint))) groups.push({ group: 'Custom', items: [net()] });
+  const groups = [...DRAND_GROUPS];
+  if (!groups.some((g) => g.items.some((n) => n.url === state.endpoint))) groups.push({ group: 'Custom', items: [networkFor(state.endpoint)] });
   endpointEl.innerHTML = groups
     .map((g) => `<optgroup label="${esc(g.group)}">${g.items.map((n) => `<option value="${esc(n.url)}"${n.url === state.endpoint ? ' selected' : ''}>${esc(n.label)}</option>`).join('')}</optgroup>`)
     .join('');
 }
 
 function renderList() {
-  listEl.innerHTML = beacons().length
-    ? beacons()
-        .map((b) => {
-          const h = health(b);
-          return `<li><button type="button" class="beacon-item${b.id === store().selected ? ' active' : ''}" data-id="${esc(b.id)}">
+  const groups = [
+    [state.endpoint, LISTS.drand],
+    [OTHERS[0].url, LISTS.nist],
+    [OTHERS[1].url, LISTS.inmetro]
+  ];
+  for (const [url, ul] of groups) {
+    const list = beaconsFor(url);
+    ul.innerHTML = list.length
+      ? list
+          .map((b) => {
+            const h = health(b);
+            const active = url === state.sel.net && b.id === state.sel.id;
+            return `<li><button type="button" class="beacon-item${active ? ' active' : ''}" data-net="${esc(url)}" data-id="${esc(b.id)}">
         <span class="dot ${h.cls}" title="${esc(h.text)}"></span>
         <span class="beacon-name">${esc(b.id)}</span>
-        <span class="beacon-meta"><span class="cd" data-cd="${esc(b.id)}">${countdownText(b)}</span>${b.latest?.round ? ` · #${b.latest.round}` : ''}</span>
+        <span class="beacon-meta"><span class="cd" data-cd="${esc(cdKey(url, b))}">${countdownText(b)}</span>${b.latest?.round ? ` · #${b.latest.round}` : ''}</span>
       </button></li>`;
-        })
-        .join('')
-    : '<li class="muted pad">No beacons loaded yet.</li>';
+          })
+          .join('')
+      : `<li class="muted pad">${netStatus[url]?.error ? `Unavailable (${esc(netStatus[url].error)})` : 'Loading…'}</li>`;
+  }
 }
 
 function roundBody(b, r, round, opts) {
@@ -181,7 +202,7 @@ function renderDetail() {
         <h2>${esc(b.id)}</h2>
         <span class="pill ${h.cls}">${esc(h.text)}</span>
         <dl class="stats">
-          <div><dt>Next round (period)</dt><dd class="cd" data-cd="${esc(b.id)}">${countdownText(b)}</dd></div>
+          <div><dt>Next round (period)</dt><dd class="cd" data-cd="${esc(cdKey(state.sel.net, b))}">${countdownText(b)}</dd></div>
           <div><dt>${drandNet ? 'Scheme' : 'Cipher'}</dt><dd>${esc(b.scheme || '—')}</dd></div>
           ${b.genesisTime ? `<div><dt>Genesis</dt><dd>${fmtTime(b.genesisTime)}</dd></div>` : ''}
         </dl>
@@ -193,6 +214,7 @@ function renderDetail() {
       <section class="card">
         <div class="card-head"><h3>Latest round <span class="round-no">${b.latest?.round ? `#${b.latest.round}` : ''}</span></h3>${copyBtn(command(b, 'round', 'latest').text, 'Copy command')}</div>
         ${roundBody(b, b.latest, b.latest?.round, { flip: true })}
+        <label class="animate-toggle"><input type="checkbox" id="animateToggle"${state.animate ? ' checked' : ''} /> Animate</label>
       </section>
 
       <section class="card">
@@ -220,6 +242,7 @@ function renderDetail() {
 }
 
 function renderAll() {
+  syncModeControl();
   renderList();
   renderDetail();
 }
@@ -227,19 +250,21 @@ function renderAll() {
 // ---- countdown + auto refresh ----------------------------------------------------------
 function tick() {
   const now = Date.now() / 1000;
-  for (const b of beacons()) {
-    if (!b.period) continue;
-    const left = secondsLeft(b, now);
-    const text = `${left}s (${b.period}s)`;
-    for (const el of document.querySelectorAll(`[data-cd="${CSS.escape(b.id)}"]`)) {
-      if (el.textContent !== text) el.textContent = text;
-      el.classList.toggle('imminent', left <= 3); // warn just before the new round lands
-    }
-    const flags = rt(b);
-    if (b.latest?.round < expectedRound(b, now) && !flags.refreshing && Date.now() - (flags.lastTry || 0) > 4000) {
-      flags.refreshing = true;
-      flags.lastTry = Date.now();
-      refreshLatest(b).finally(() => (flags.refreshing = false));
+  for (const url of activeUrls()) {
+    for (const b of beaconsFor(url)) {
+      if (!b.period) continue;
+      const left = secondsLeft(b, now);
+      const text = `${left}s (${b.period}s)`;
+      for (const el of document.querySelectorAll(`[data-cd="${CSS.escape(cdKey(url, b))}"]`)) {
+        if (el.textContent !== text) el.textContent = text;
+        el.classList.toggle('imminent', left <= 3); // warn just before the new round lands
+      }
+      const flags = rt(url, b);
+      if (b.latest?.round < expectedRound(b, now) && !flags.refreshing && Date.now() - (flags.lastTry || 0) > 4000) {
+        flags.refreshing = true;
+        flags.lastTry = Date.now();
+        refreshLatest(url, b).finally(() => (flags.refreshing = false));
+      }
     }
   }
 }
@@ -248,7 +273,7 @@ const HEX = '0123456789abcdef';
 // Quickly flip random characters, settling left to right on the real value.
 function flip(el) {
   const target = el.dataset.flip;
-  if (!target || reducedMotion) return;
+  if (!target || reducedMotion || !state.animate) return;
   const frames = 16;
   let frame = 0;
   el.classList.add('flipping');
@@ -266,17 +291,17 @@ function flip(el) {
 }
 
 // ---- data ------------------------------------------------------------------------------
-async function refreshLatest(b) {
-  const endpoint = state.endpoint;
+async function refreshLatest(url, b) {
   try {
     const prev = b.latest?.round;
-    const latest = await fetchRound(net(), b, 'latest');
-    if (endpoint !== state.endpoint) return;
-    b.latest = latest;
-    store().savedAt = Date.now();
+    const latest = await fetchRound(networkFor(url), b, 'latest');
+    const cur = activeUrls().includes(url) && beaconsFor(url).find((x) => x.id === b.id);
+    if (!cur) return;
+    cur.latest = latest;
+    storeFor(url).savedAt = Date.now();
     persist();
     renderList();
-    if (b.id === store().selected) {
+    if (url === state.sel.net && b.id === state.sel.id) {
       renderDetail();
       if (prev && latest.round !== prev) detailEl.querySelectorAll('.pair .card:first-child [data-flip]').forEach(flip);
     }
@@ -285,20 +310,40 @@ async function refreshLatest(b) {
   }
 }
 
+// Choose a sensible beacon ("default" first) when the selection is empty or has vanished.
+function ensureSelection() {
+  const list = beaconsFor(state.sel.net);
+  if (!list.length || list.some((b) => b.id === state.sel.id)) return; // nothing to fix yet
+  for (const url of [state.sel.net, ...activeUrls()]) {
+    const l = beaconsFor(url);
+    const pick = l.find((b) => b.id === 'default') || l[0];
+    if (pick) {
+      state.sel = { net: url, id: pick.id };
+      return;
+    }
+  }
+}
+
 function afterBeaconsChanged() {
-  if (!byId(store().selected)) store().selected = beacons()[0]?.id || null;
+  ensureSelection();
   persist();
   renderAll();
 }
 
 async function loadStaticCache() {
-  if (beacons().length) return;
-  const endpoint = state.endpoint;
+  const empty = activeUrls().filter((u) => !beaconsFor(u).length);
+  if (!empty.length) return;
   try {
     const data = await fetchJson('data/beacons.json');
-    const cached = data.networks?.[endpoint];
-    if (endpoint === state.endpoint && Array.isArray(cached) && cached.length && !beacons().length) {
-      store().beacons = cached;
+    let used = false;
+    for (const url of empty) {
+      const cached = data.networks?.[url];
+      if (activeUrls().includes(url) && Array.isArray(cached) && cached.length && !beaconsFor(url).length) {
+        storeFor(url).beacons = cached;
+        used = true;
+      }
+    }
+    if (used) {
       setStatus(`Showing deploy-time cache from ${new Date(data.generatedAt).toLocaleString()} — refreshing…`);
       afterBeaconsChanged();
     }
@@ -307,29 +352,48 @@ async function loadStaticCache() {
   }
 }
 
-async function refreshBeacons() {
-  const endpoint = state.endpoint;
-  const network = net();
-  setStatus(`Loading beacons from ${network.label}…`);
+function updateStatus() {
+  const parts = activeUrls().map((url) => {
+    const n = networkFor(url);
+    const s = netStatus[url];
+    const name = n.kind === 'drand' ? 'drand' : n.name.replace(' Beacon', '');
+    return `${name}: ${s?.error ? 'unavailable' : s ? `${s.count} beacon${s.count === 1 ? '' : 's'}` : 'loading…'}`;
+  });
+  const errors = activeUrls().filter((u) => netStatus[u]?.error);
+  const done = activeUrls().every((u) => netStatus[u]);
+  statusEl.textContent = `${parts.join(' · ')}${done && errors.length < activeUrls().length ? ` · updated ${new Date().toLocaleTimeString()}` : ''}`;
+  statusEl.title = errors.map((u) => `${networkFor(u).label}: ${netStatus[u].error}`).join('\n');
+  statusEl.className = `statusbar ${done ? (errors.length ? 'bad' : 'ok') : ''}`;
+}
+
+async function refreshBeacons(url) {
+  const network = networkFor(url);
+  delete netStatus[url];
+  updateStatus();
   try {
     const ids = await listBeacons(network);
     if (!ids.length) throw new Error('empty beacon list');
     const results = await Promise.allSettled(ids.map((id) => fetchSummary(network, id)));
-    if (endpoint !== state.endpoint) return;
-    const old = beacons();
-    store().beacons = ids.map((id, i) => {
+    if (!activeUrls().includes(url)) return;
+    if (results.every((r) => r.status === 'rejected')) throw results[0].reason; // e.g. NIST/INMETRO unreachable
+    const old = beaconsFor(url);
+    storeFor(url).beacons = ids.map((id, i) => {
       const prev = old.find((b) => b.id === id) || {};
       return results[i].status === 'fulfilled' ? { ...prev, ...results[i].value, latest: results[i].value.latest || prev.latest } : prev.id ? prev : { id };
     });
-    store().savedAt = Date.now();
+    storeFor(url).savedAt = Date.now();
+    netStatus[url] = { count: ids.length };
     afterBeaconsChanged();
-    setStatus(`${ids.length} beacon${ids.length === 1 ? '' : 's'} · live data updated ${new Date().toLocaleTimeString()}`, 'ok');
   } catch (error) {
-    if (endpoint !== state.endpoint) return;
+    if (!activeUrls().includes(url)) return;
     console.error(error);
-    setStatus(beacons().length ? `Network unavailable — showing cached data (${error.message})` : `Could not load beacons from ${network.label}: ${error.message}`, 'bad');
+    netStatus[url] = { error: error.message };
+    renderList();
   }
+  updateStatus();
 }
+
+const refreshAll = (urls = activeUrls()) => Promise.all(urls.map(refreshBeacons));
 
 async function loadHistory(b) {
   const round = histRound(b);
@@ -365,13 +429,15 @@ function setHistoryRound(b, round, { load = true } = {}) {
 }
 
 function switchEndpoint(url) {
+  const selectedIsDrand = net().kind === 'drand';
   state.endpoint = url;
+  if (selectedIsDrand) state.sel = { net: url, id: state.sel.id };
   state.historyData = null;
   state.historyPending = null;
+  ensureSelection();
   persist();
-  syncModeControl();
   renderAll();
-  loadStaticCache().then(refreshBeacons);
+  loadStaticCache().then(() => refreshAll([url]));
 }
 
 // ---- events ----------------------------------------------------------------------------
@@ -380,10 +446,11 @@ endpointEl.addEventListener('change', () => {
   switchEndpoint(endpointEl.value);
 });
 
-listEl.addEventListener('click', (e) => {
+sidebarEl.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-id]');
   if (!btn) return;
-  store().selected = btn.dataset.id;
+  state.sel = { net: btn.dataset.net, id: btn.dataset.id };
+  state.historyData = null;
   persist();
   renderAll();
   if (window.matchMedia('(max-width: 800px)').matches) detailEl.scrollIntoView({ behavior: 'smooth' });
@@ -421,6 +488,12 @@ detailEl.addEventListener('keydown', (e) => {
 });
 
 detailEl.addEventListener('change', (e) => {
+  if (e.target.id === 'animateToggle') {
+    state.animate = e.target.checked;
+    applyAnimate();
+    persist();
+    return;
+  }
   // Remember the round even if the user edits it without loading.
   if (e.target.id === 'historyInput') setHistoryRound(selectedBeacon(), e.target.value, { load: false });
 });
@@ -450,6 +523,10 @@ outputModeEl.addEventListener('change', () => {
   renderDetail();
 });
 
+function applyAnimate() {
+  document.documentElement.dataset.animate = state.animate ? 'on' : 'off';
+}
+
 function applyTheme() {
   if (state.theme === 'auto') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = state.theme;
@@ -465,13 +542,13 @@ $('themeToggle').addEventListener('click', () => {
 
 // ---- start -----------------------------------------------------------------------------
 applyTheme();
+applyAnimate();
 renderEndpoints();
-syncModeControl();
-if (beacons().length) {
-  setStatus(`Showing data saved ${new Date(store().savedAt || Date.now()).toLocaleString()} — refreshing…`);
+if (activeUrls().some((u) => beaconsFor(u).length)) {
+  setStatus('Showing saved data — refreshing…');
   afterBeaconsChanged();
 } else {
   renderAll();
 }
-loadStaticCache().then(refreshBeacons);
+loadStaticCache().then(() => refreshAll());
 setInterval(tick, 1000);

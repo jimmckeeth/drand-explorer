@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>drand Explorer</title>
+    <title>Entropy Beacon Explorer</title>
     <meta name="color-scheme" content="light dark" />
     <link rel="stylesheet" href="style.css" />
     <script>
@@ -19,8 +19,8 @@
       <div class="brand">
         <span class="logo" aria-hidden="true">◈</span>
         <div>
-          <h1>drand Explorer</h1>
-          <p>Distributed randomness beacons</p>
+          <h1>Entropy Beacon Explorer</h1>
+          <p>Public randomness beacons · drand · NIST · INMETRO</p>
         </div>
       </div>
       <div class="controls">
@@ -41,15 +41,29 @@
 
     <div class="layout">
       <nav class="sidebar" aria-label="Beacons">
-        <label class="network">
-          <span>Network</span>
-          <select id="endpointSelect" aria-label="API endpoint"></select>
-        </label>
-        <h2>Beacons</h2>
-        <ul id="beaconList" class="beacon-list"></ul>
+        <section class="group">
+          <h2>drand</h2>
+          <label class="network">
+            <span>Network</span>
+            <select id="endpointSelect" aria-label="drand network"></select>
+          </label>
+          <ul id="listDrand" class="beacon-list"></ul>
+        </section>
+        <section class="group">
+          <h2>NIST (USA)</h2>
+          <ul id="listNist" class="beacon-list"></ul>
+        </section>
+        <section class="group">
+          <h2>INMETRO (Brazil)</h2>
+          <ul id="listInmetro" class="beacon-list"></ul>
+        </section>
       </nav>
       <main id="detail" class="detail" aria-live="polite"></main>
     </div>
+
+    <footer class="footer">
+      <a href="https://github.com/jimmckeeth/entropy-beacon-explorer" target="_blank" rel="noopener">Use the source</a>
+    </footer>
 
     <script type="module" src="app.js"></script>
   </body>

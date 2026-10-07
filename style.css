@@ -181,3 +181,12 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 .kv .v a:hover { text-decoration: underline; }
 .hint { margin-top: 0.5rem; font-size: 0.72rem; color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .cd.imminent { animation: none; } }
+
+/* sidebar groups */
+.group + .group { margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+.sidebar .network { padding-bottom: 0.4rem; }
+.animate-toggle { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; font-size: 0.8rem; color: var(--muted); cursor: pointer; width: fit-content; }
+:root[data-animate='off'] .cd.imminent { animation: none; }
+.footer { text-align: center; padding: 1rem; font-size: 0.85rem; }
+.footer a { color: var(--accent); text-decoration: none; }
+.footer a:hover { text-decoration: underline; }
