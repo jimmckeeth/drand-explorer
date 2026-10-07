@@ -8,7 +8,7 @@ A real-time explorer of the League of Entropy's Distributed Randomness beacon (d
 - Starts populated: the deploy workflow caches the beacon list and basic info into `data/beacons.json`, and each browser also keeps its last-seen data in `localStorage`
 - Then refreshes live from the API, with a countdown to the next round and a health indicator
 - Browse historical rounds; the selected beacon and the round you were browsing per beacon are remembered
-- Light/dark theme (follows the system, toggle in the header) and copyable URL / cURL / wget commands
+- Light/dark theme (follows the system, toggle in the header) and copyable URL / cURL / drand CLI commands
 
 ## Local run
 

@@ -5,6 +5,7 @@ import {
   fetchJson,
   parseBeaconIds,
   roundTime,
+  summarizeRound,
   API_BASE
 } from './drand.js';
 
@@ -61,10 +62,21 @@ function health(b) {
   return { text: `Behind ${behind}`, cls: 'bad' };
 }
 
-function command(url) {
+// kind: 'info' | 'round'; round: number or 'latest'
+function command(b, kind, round) {
+  const url = beaconUrl(b.id, kind === 'info' ? '/info' : `/rounds/${round}`);
   if (state.outputMode === 'curl') return `curl -s "${url}"`;
-  if (state.outputMode === 'cli') return `wget -qO- "${url}"`;
+  if (state.outputMode === 'cli') {
+    const base = `--url ${API_BASE.replace(/\/v2$/, '')} --chain-hash ${b.hash || '<chain-hash>'}`;
+    return kind === 'info' ? `drand get chain-info ${base}` : `drand get public ${base}${round === 'latest' ? '' : ` --round ${round}`}`;
+  }
   return url;
+}
+
+function commandRow(b, label, kind, round) {
+  const cmd = command(b, kind, round);
+  return `<div class="kv"><span class="k">${esc(label)}</span><code class="v wrap">${esc(cmd)}</code>
+    <button type="button" class="copy" data-copy="${esc(cmd)}">Copy</button></div>`;
 }
 
 function setStatus(text, cls = '') {
@@ -101,20 +113,13 @@ function renderHistoryResult(b) {
   if (h.error) return `<p class="error">Round ${round} not available (${esc(h.error)}).</p>`;
   return `${copyRow('Randomness', h.data.randomness, { raw: true })}
     ${copyRow('Signature', h.data.signature, { raw: true })}
-    <div class="kv"><span class="k">Time</span><span class="v">${fmtTime(roundTime(b, round))}</span></div>`;
+    <div class="kv"><span class="k">Time</span><span class="v">${fmtTime(roundTime(b, round))}</span></div>
+    ${commandRow(b, 'Command', 'round', round)}`;
 }
 
 function renderCommands(b) {
   const round = state.history[b.id] || b.latest?.round || 'latest';
-  const eps = [
-    ['Info', beaconUrl(b.id, '/info')],
-    ['Latest', beaconUrl(b.id, '/rounds/latest')],
-    [`Round ${round}`, beaconUrl(b.id, `/rounds/${round}`)]
-  ];
-  return eps
-    .map(([label, url]) => `<div class="kv"><span class="k">${esc(label)}</span><code class="v wrap">${esc(command(url))}</code>
-      <button type="button" class="copy" data-copy="${esc(command(url))}">Copy</button></div>`)
-    .join('');
+  return [commandRow(b, 'Info', 'info'), commandRow(b, 'Latest', 'round', 'latest'), commandRow(b, `Round ${round}`, 'round', round)].join('');
 }
 
 function renderDetail() {
@@ -147,6 +152,7 @@ function renderDetail() {
         ${copyRow('Randomness', b.latest?.randomness, { raw: true })}
         ${copyRow('Signature', b.latest?.signature, { raw: true })}
         <div class="kv"><span class="k">Time</span><span class="v">${fmtTime(roundTime(b, b.latest?.round))}</span></div>
+        ${commandRow(b, 'Command', 'round', 'latest')}
       </div>
     </section>
 
@@ -192,7 +198,7 @@ function updateCountdown() {
 async function refreshLatest(b) {
   try {
     const data = await fetchJson(beaconUrl(b.id, '/rounds/latest'));
-    b.latest = { round: Number(data.round) || 0, randomness: data.randomness || '', signature: data.signature || '' };
+    b.latest = await summarizeRound(data);
     state.savedAt = Date.now();
     persist();
     renderList();
@@ -252,7 +258,7 @@ async function loadHistory(b) {
   if (!round) return;
   try {
     const data = await fetchJson(beaconUrl(b.id, `/rounds/${round}`));
-    state.historyData = { id: b.id, round, data };
+    state.historyData = { id: b.id, round, data: await summarizeRound(data) };
   } catch (error) {
     state.historyData = { id: b.id, round, error: error.message };
   }
@@ -316,8 +322,7 @@ detailEl.addEventListener('change', (e) => {
 outputModeEl.addEventListener('change', () => {
   state.outputMode = outputModeEl.value;
   persist();
-  const b = selectedBeacon();
-  if (b && $('commands')) $('commands').innerHTML = renderCommands(b);
+  renderDetail();
 });
 
 function applyTheme() {
