@@ -34,11 +34,11 @@ function pulseToRound(p = {}) {
   };
 }
 
-async function fetchPulse(net, b, path) {
+async function fetchPulse(net, b, path, opts) {
   let error;
   for (const base of b.base ? [b.base] : net.bases) {
     try {
-      const data = await fetchJson(base + path);
+      const data = await fetchJson(base + path, opts);
       return { pulse: data.pulse || data, base };
     } catch (e) {
       error = e;
@@ -77,9 +77,10 @@ export async function fetchSummary(net, id) {
 export async function fetchRound(net, b, round) {
   if (net.kind === 'nist') {
     const path = round === 'latest' ? '/pulse/last' : `/chain/${b.chainIndex}/pulse/${round}`;
-    return pulseToRound((await fetchPulse(net, b, path)).pulse);
+    return pulseToRound((await fetchPulse(net, b, path, round === 'latest' ? { cache: 'no-store' } : undefined)).pulse);
   }
-  const r = await summarizeRound(await fetchJson(beaconUrl(net.url, b.id, `/rounds/${round}`)));
+  // 'latest' must never come from the HTTP cache or the page would keep showing an old round.
+  const r = await summarizeRound(await fetchJson(beaconUrl(net.url, b.id, `/rounds/${round}`), round === 'latest' ? { cache: 'no-store' } : undefined));
   r.time = roundTime(b, r.round);
   return r;
 }

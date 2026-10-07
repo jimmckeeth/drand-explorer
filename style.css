@@ -190,3 +190,5 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 .footer { text-align: center; padding: 1rem; font-size: 0.85rem; }
 .footer a { color: var(--accent); text-decoration: none; }
 .footer a:hover { text-decoration: underline; }
+
+.stale { opacity: 0.55; transition: opacity 0.2s; }

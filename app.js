@@ -57,6 +57,8 @@ const beaconsFor = (url) => storeFor(url).beacons;
 const selectedBeacon = () => beaconsFor(state.sel.net).find((b) => b.id === state.sel.id);
 const histKey = (b) => `${state.sel.net}|${b.id}`;
 const histRound = (b) => state.history[histKey(b)];
+// The round shown in the history box: the saved position, else follow the latest round.
+const curRound = (b) => histRound(b) || b.latest?.round || 0;
 const cdKey = (url, b) => `${url}|${b.id}`;
 
 function persist() {
@@ -175,15 +177,16 @@ function roundBody(b, r, round, opts) {
 }
 
 function historyBody(b) {
-  const round = histRound(b);
+  const round = curRound(b);
   const h = state.historyData;
+  if (h && h.key === histKey(b) && h.round !== round && h.data) return `<div class="stale">${roundBody(b, h.data, h.round)}</div>`; // keep old values until the new round arrives
   if (!h || h.key !== histKey(b) || h.round !== round) return '<p class="muted">Loading…</p>';
   if (h.error) return `<p class="error">Round ${round} not available (${esc(h.error)}).</p>`;
   return roundBody(b, h.data, round);
 }
 
 function endpointsBody(b) {
-  const round = histRound(b) || b.latest?.round || 'latest';
+  const round = curRound(b) || 'latest';
   return commandRow(b, 'Info', 'info') + commandRow(b, 'Latest', 'round', 'latest') + commandRow(b, `Round ${round}`, 'round', round);
 }
 
@@ -194,7 +197,7 @@ function renderDetail() {
     return;
   }
   const h = health(b);
-  const hr = histRound(b) || b.latest?.round || 1;
+  const hr = curRound(b) || 1;
   const drandNet = net().kind === 'drand';
   detailEl.innerHTML = `
     <section class="card hero">
@@ -218,17 +221,16 @@ function renderDetail() {
       </section>
 
       <section class="card">
-        <div class="card-head"><h3>History</h3><span id="historyCopy">${histRound(b) ? copyBtn(command(b, 'round', histRound(b)).text, 'Copy command') : ''}</span></div>
+        <div class="card-head"><h3>History</h3><span id="historyCopy">${curRound(b) ? copyBtn(command(b, 'round', curRound(b)).text, 'Copy command') : ''}</span></div>
         <div class="history-controls">
           <button type="button" data-action="prev" aria-label="Previous round">◀</button>
           <input type="number" id="historyInput" min="1" step="1" value="${hr}" aria-label="Round number" />
           <button type="button" data-action="next" aria-label="Next round">▶</button>
-          <button type="button" class="primary" data-action="load">Load</button>
           <button type="button" data-action="first" title="First round (Home)">⏮</button>
           <button type="button" data-action="latest" title="Latest round (End)">⏭</button>
         </div>
         <div id="historyBody">${historyBody(b)}</div>
-        <p class="hint">← → ±1 round · PgUp/PgDn ±1 day · Alt+PgUp/PgDn ±1 week · Home first · End latest</p>
+        <p class="hint">↑ ↓ beacon · ← → ±1 round · PgUp/PgDn ±1 day · Alt+PgUp/PgDn ±1 week · Home first · End latest</p>
       </section>
     </div>
 
@@ -238,7 +240,8 @@ function renderDetail() {
     </details>`;
   // Restore the saved history position without waiting for the user to press Load.
   const hd = state.historyData;
-  if (histRound(b) && !(hd && hd.key === histKey(b) && hd.round === histRound(b)) && state.historyPending !== `${histKey(b)}|${histRound(b)}`) loadHistory(b);
+  const want = curRound(b);
+  if (want && !(hd && hd.key === histKey(b) && hd.round === want) && state.historyPending !== `${histKey(b)}|${want}`) loadHistory(b);
 }
 
 function renderAll() {
@@ -260,7 +263,7 @@ function tick() {
         el.classList.toggle('imminent', left <= 3); // warn just before the new round lands
       }
       const flags = rt(url, b);
-      if (b.latest?.round < expectedRound(b, now) && !flags.refreshing && Date.now() - (flags.lastTry || 0) > 4000) {
+      if ((b.latest?.round || 0) < expectedRound(b, now) && !flags.refreshing && Date.now() - (flags.lastTry || 0) > 4000) {
         flags.refreshing = true;
         flags.lastTry = Date.now();
         refreshLatest(url, b).finally(() => (flags.refreshing = false));
@@ -294,7 +297,12 @@ function flip(el) {
 async function refreshLatest(url, b) {
   try {
     const prev = b.latest?.round;
-    const latest = await fetchRound(networkFor(url), b, 'latest');
+    const network = networkFor(url);
+    let latest = await fetchRound(network, b, 'latest');
+    // The "latest" endpoint can lag the clock (or be served stale by a cache): ask for the round
+    // we know is due by number instead of waiting for the next retry.
+    const due = expectedRound(b);
+    if (latest.round < due) latest = await fetchRound(network, b, due).catch(() => latest);
     const cur = activeUrls().includes(url) && beaconsFor(url).find((x) => x.id === b.id);
     if (!cur) return;
     cur.latest = latest;
@@ -396,7 +404,7 @@ async function refreshBeacons(url) {
 const refreshAll = (urls = activeUrls()) => Promise.all(urls.map(refreshBeacons));
 
 async function loadHistory(b) {
-  const round = histRound(b);
+  const round = curRound(b);
   const key = histKey(b);
   if (!round) return;
   state.historyPending = `${key}|${round}`;
@@ -407,7 +415,7 @@ async function loadHistory(b) {
   }
   if (state.historyPending === `${key}|${round}`) state.historyPending = null;
   const cur = selectedBeacon();
-  if (cur && key === histKey(cur) && histRound(cur) === round) {
+  if (cur && key === histKey(cur) && curRound(cur) === round) {
     $('historyBody').innerHTML = historyBody(cur);
     refreshHistoryExtras(cur);
   }
@@ -415,14 +423,14 @@ async function loadHistory(b) {
 
 function refreshHistoryExtras(b) {
   $('commands').innerHTML = endpointsBody(b);
-  $('historyCopy').innerHTML = histRound(b) ? copyBtn(command(b, 'round', histRound(b)).text, 'Copy command') : '';
+  $('historyCopy').innerHTML = curRound(b) ? copyBtn(command(b, 'round', curRound(b)).text, 'Copy command') : '';
 }
 
 function setHistoryRound(b, round, { load = true } = {}) {
   const max = b.latest?.round || Infinity;
   const n = Math.min(max, Math.max(1, Math.floor(Number(round)) || 1));
   state.history[histKey(b)] = n;
-  $('historyInput').value = n;
+  if (Number($('historyInput').value) !== n) $('historyInput').value = n;
   persist();
   if (load) loadHistory(b);
   else refreshHistoryExtras(b);
@@ -446,15 +454,30 @@ endpointEl.addEventListener('change', () => {
   switchEndpoint(endpointEl.value);
 });
 
+function selectBeacon(url, id) {
+  state.sel = { net: url, id };
+  state.historyData = null;
+  state.historyPending = null;
+  persist();
+  renderAll();
+}
+
 sidebarEl.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-id]');
   if (!btn) return;
-  state.sel = { net: btn.dataset.net, id: btn.dataset.id };
-  state.historyData = null;
-  persist();
-  renderAll();
+  selectBeacon(btn.dataset.net, btn.dataset.id);
   if (window.matchMedia('(max-width: 800px)').matches) detailEl.scrollIntoView({ behavior: 'smooth' });
 });
+
+// Up/Down cycle through every listed beacon (drand, then NIST, then INMETRO), wrapping around.
+function cycleBeacon(step) {
+  const all = activeUrls().flatMap((url) => beaconsFor(url).map((b) => ({ url, id: b.id })));
+  if (!all.length) return;
+  const i = all.findIndex((x) => x.url === state.sel.net && x.id === state.sel.id);
+  const next = all[(i + step + all.length) % all.length];
+  selectBeacon(next.url, next.id);
+  sidebarEl.querySelector('.beacon-item.active')?.scrollIntoView({ block: 'nearest' });
+}
 
 detailEl.addEventListener('click', async (e) => {
   const b = selectedBeacon();
@@ -475,7 +498,6 @@ detailEl.addEventListener('click', async (e) => {
   const current = Number($('historyInput').value) || b.latest?.round || 1;
   if (action === 'prev') setHistoryRound(b, current - 1);
   else if (action === 'next') setHistoryRound(b, current + 1);
-  else if (action === 'load') setHistoryRound(b, current);
   else if (action === 'first') setHistoryRound(b, 1);
   else if (action === 'latest' && b.latest?.round) setHistoryRound(b, b.latest.round);
 });
@@ -494,8 +516,22 @@ detailEl.addEventListener('change', (e) => {
     persist();
     return;
   }
-  // Remember the round even if the user edits it without loading.
-  if (e.target.id === 'historyInput') setHistoryRound(selectedBeacon(), e.target.value, { load: false });
+  // Typing a round loads it as soon as the box is committed (blur/Enter)...
+  if (e.target.id === 'historyInput') {
+    clearTimeout(typingTimer);
+    setHistoryRound(selectedBeacon(), e.target.value);
+  }
+});
+
+// ...or shortly after the user stops typing.
+let typingTimer;
+detailEl.addEventListener('input', (e) => {
+  if (e.target.id !== 'historyInput') return;
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(() => {
+    const b = selectedBeacon();
+    if (b && Number(e.target.value) > 0) setHistoryRound(b, e.target.value);
+  }, 500);
 });
 
 // Keyboard navigation through rounds.
@@ -503,7 +539,12 @@ document.addEventListener('keydown', (e) => {
   const b = selectedBeacon();
   if (!b || e.ctrlKey || e.metaKey || e.target.closest('input, select, textarea, [contenteditable]')) return;
   const day = Math.max(1, Math.round(86400 / (b.period || 30)));
-  const cur = histRound(b) || b.latest?.round || 1;
+  const cur = curRound(b) || 1;
+  if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.altKey) {
+    e.preventDefault();
+    cycleBeacon(e.key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
   let target;
   if (e.key === 'ArrowLeft' && !e.altKey) target = cur - 1;
   else if (e.key === 'ArrowRight' && !e.altKey) target = cur + 1;

@@ -7,11 +7,11 @@ export const ENDPOINTS = [
   { group: 'Cloudflare testnet', items: ['https://testnet-api.drand.cloudflare.com'] }
 ];
 
-export async function fetchJson(url, { timeoutMs = 15000 } = {}) {
+export async function fetchJson(url, { timeoutMs = 15000, cache } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal, headers: { accept: 'application/json' } });
+    const response = await fetch(url, { signal: controller.signal, headers: { accept: 'application/json' }, ...(cache && { cache }) });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status} for ${url}`);
     }
