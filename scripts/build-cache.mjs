@@ -18,7 +18,7 @@ const old = await previous();
 let beacons = [];
 try {
   const ids = parseBeaconIds(await fetchJson(`${API_BASE}/beacons`));
-  const results = await Promise.allSettled(ids.map(fetchBeaconSummary));
+  const results = await Promise.allSettled(ids.map((id) => fetchBeaconSummary(id, API_BASE)));
   beacons = results.flatMap((r, i) => {
     if (r.status === 'fulfilled') return [r.value];
     console.warn(`beacon ${ids[i]} failed: ${r.reason?.message}`);

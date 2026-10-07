@@ -1,6 +1,12 @@
 // Shared by the browser app and the deploy-time cache builder (scripts/build-cache.mjs).
 export const API_BASE = 'https://api.drand.sh/v2';
 
+export const ENDPOINTS = [
+  { group: 'Public mainnet', items: ['https://api.drand.sh/v2', 'https://api2.drand.sh/v2', 'https://api3.drand.sh/v2'] },
+  { group: 'Protocol Labs testnet', items: ['https://pl-us.testnet.drand.sh/v2', 'https://pl-eu.testnet.drand.sh/v2'] },
+  { group: 'Cloudflare testnet', items: ['https://testnet-api.drand.cloudflare.com'] }
+];
+
 export async function fetchJson(url, { timeoutMs = 15000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -60,12 +66,12 @@ export async function summarizeRound(round = {}) {
 }
 
 // Some responses don't carry the chain hash; find it by matching beacon id across /v2/chains.
-let chainIndex;
-async function resolveChainHash(id) {
-  chainIndex ??= (async () => {
-    const data = await fetchJson(`${API_BASE}/chains`);
+const chainIndexes = new Map();
+async function resolveChainHash(base, id) {
+  if (!chainIndexes.has(base)) chainIndexes.set(base, (async () => {
+    const data = await fetchJson(`${base}/chains`);
     const hashes = (Array.isArray(data) ? data : data?.chains || []).map((c) => (typeof c === 'string' ? c : c?.hash));
-    const infos = await Promise.allSettled(hashes.filter(Boolean).map((h) => fetchJson(`${API_BASE}/chains/${h}/info`).then((i) => [h, i])));
+    const infos = await Promise.allSettled(hashes.filter(Boolean).map((h) => fetchJson(`${base}/chains/${h}/info`).then((i) => [h, i])));
     const map = {};
     for (const r of infos) {
       if (r.status !== 'fulfilled') continue;
@@ -74,22 +80,22 @@ async function resolveChainHash(id) {
       if (name) map[name] = i?.hash || h;
     }
     return map;
-  })().catch(() => ({}));
-  return (await chainIndex)[id] || '';
+  })().catch(() => ({})));
+  return (await chainIndexes.get(base))[id] || '';
 }
 
-export const beaconUrl = (id, resource = '') => `${API_BASE}/beacons/${encodeURIComponent(id)}${resource}`;
+export const beaconUrl = (base, id, resource = '') => `${base}/beacons/${encodeURIComponent(id)}${resource}`;
 
-export async function fetchBeaconSummary(id) {
+export async function fetchBeaconSummary(id, base = API_BASE) {
   const [info, latest] = await Promise.allSettled([
-    fetchJson(beaconUrl(id, '/info')),
-    fetchJson(beaconUrl(id, '/rounds/latest'))
+    fetchJson(beaconUrl(base, id, '/info')),
+    fetchJson(beaconUrl(base, id, '/rounds/latest'))
   ]);
   if (info.status !== 'fulfilled' && latest.status !== 'fulfilled') {
     throw info.reason;
   }
   const summary = summarizeInfo(id, info.status === 'fulfilled' ? info.value : {});
-  if (!summary.hash) summary.hash = await resolveChainHash(id);
+  if (!summary.hash) summary.hash = await resolveChainHash(base, id);
   return { ...summary, latest: latest.status === 'fulfilled' ? await summarizeRound(latest.value) : null };
 }
 

@@ -4,6 +4,7 @@ A real-time explorer of the League of Entropy's Distributed Randomness beacon (d
 
 ## Features
 
+- Network selector for the public API mirrors (`api`, `api2`, `api3`), Protocol Labs testnet and Cloudflare testnet; each network's data is cached separately
 - Lists drand v2 **beacons by name** (`default`, `quicknet`, …) from `https://api.drand.sh/v2/beacons`; the chain hash is shown as a detail
 - Starts populated: the deploy workflow caches the beacon list and basic info into `data/beacons.json`, and each browser also keeps its last-seen data in `localStorage`
 - Then refreshes live from the API, with a countdown to the next round and a health indicator
