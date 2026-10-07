@@ -170,3 +170,14 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
   .kv { grid-template-columns: 1fr auto; }
   .k { grid-column: 1 / -1; padding: 0; }
 }
+
+/* countdown + flip animation */
+.cd { font-variant-numeric: tabular-nums; transition: color 0.3s; }
+.cd.imminent { color: var(--warn); animation: pulse 0.5s ease-in-out infinite alternate; }
+.beacon-meta .cd.imminent { font-weight: 600; }
+@keyframes pulse { to { opacity: 0.55; } }
+.flipping { color: var(--accent); }
+.kv .v a { color: var(--accent); text-decoration: none; }
+.kv .v a:hover { text-decoration: underline; }
+.hint { margin-top: 0.5rem; font-size: 0.72rem; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .cd.imminent { animation: none; } }

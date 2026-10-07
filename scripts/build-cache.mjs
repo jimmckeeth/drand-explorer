@@ -1,34 +1,37 @@
-// Fetches the beacon list and basic info for each beacon and writes data/beacons.json.
-// Run during deploy so the site starts populated. Never fails the deploy: if the API is
-// unreachable the previous cache (or an empty one) is kept and the browser falls back to live data.
+// Fetches the beacon list and basic info for every network and writes data/beacons.json.
+// Run during deploy so the site starts populated. Never fails the deploy: a network that is
+// unreachable keeps its previous cache and the browser falls back to live data.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { API_BASE, fetchBeaconSummary, fetchJson, parseBeaconIds } from '../drand.js';
+import { ALL_NETWORKS, fetchSummary, listBeacons } from '../providers.js';
 
 const OUT = new URL('../data/beacons.json', import.meta.url);
 
-async function previous() {
-  try {
-    return JSON.parse(await readFile(OUT, 'utf8'));
-  } catch {
-    return { beacons: [] };
-  }
+let old = {};
+try {
+  old = JSON.parse(await readFile(OUT, 'utf8')).networks || {};
+} catch {
+  /* first run */
 }
 
-const old = await previous();
-let beacons = [];
-try {
-  const ids = parseBeaconIds(await fetchJson(`${API_BASE}/beacons`));
-  const results = await Promise.allSettled(ids.map((id) => fetchBeaconSummary(id, API_BASE)));
-  beacons = results.flatMap((r, i) => {
-    if (r.status === 'fulfilled') return [r.value];
-    console.warn(`beacon ${ids[i]} failed: ${r.reason?.message}`);
-    return old.beacons.filter((b) => b.id === ids[i]);
-  });
-} catch (error) {
-  console.warn(`beacon list failed, keeping previous cache: ${error.message}`);
-  beacons = old.beacons;
-}
+const networks = {};
+await Promise.all(
+  ALL_NETWORKS.map(async (net) => {
+    const prev = old[net.url] || [];
+    try {
+      const ids = await listBeacons(net);
+      const results = await Promise.allSettled(ids.map((id) => fetchSummary(net, id)));
+      networks[net.url] = results.flatMap((r, i) => {
+        if (r.status === 'fulfilled') return [r.value];
+        console.warn(`${net.url} ${ids[i]} failed: ${r.reason?.message}`);
+        return prev.filter((b) => b.id === ids[i]);
+      });
+    } catch (error) {
+      console.warn(`${net.url} failed, keeping previous cache: ${error.message}`);
+      networks[net.url] = prev;
+    }
+    console.log(`${net.url}: ${networks[net.url].map((b) => b.id).join(', ') || '(none)'}`);
+  })
+);
 
 await mkdir(new URL('../data/', import.meta.url), { recursive: true });
-await writeFile(OUT, JSON.stringify({ generatedAt: new Date().toISOString(), beacons }, null, 2) + '\n');
-console.log(`Cached ${beacons.length} beacon(s): ${beacons.map((b) => b.id).join(', ')}`);
+await writeFile(OUT, JSON.stringify({ generatedAt: new Date().toISOString(), networks }, null, 2) + '\n');

@@ -32,7 +32,7 @@ jobs:
       - name: Assemble site
         run: |
           mkdir _site
-          cp -r index.html app.js drand.js style.css data .nojekyll _site/
+          cp -r index.html app.js drand.js providers.js style.css data .nojekyll _site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

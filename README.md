@@ -4,12 +4,14 @@ A real-time explorer of the League of Entropy's Distributed Randomness beacon (d
 
 ## Features
 
-- Network selector for the public API mirrors (`api`, `api2`, `api3`), Protocol Labs testnet and Cloudflare testnet; each network's data is cached separately
+- Network selector: drand mainnet mirrors, Protocol Labs and Cloudflare testnets, plus the NIST Beacon 2.0 and Brazil's INMETRO beacon; each network's data is cached separately
+- Keyboard history browsing: ←/→ ±1 round, PgUp/PgDn ±1 day, Alt+PgUp/PgDn ±1 week, Home first, End latest
+- Countdown shows `next round (period)`, warns just before a round lands, and the new values flip in with a short animation
 - Lists drand v2 **beacons by name** (`default`, `quicknet`, …) from `https://api.drand.sh/v2/beacons`; the chain hash is shown as a detail
 - Starts populated: the deploy workflow caches the beacon list and basic info into `data/beacons.json`, and each browser also keeps its last-seen data in `localStorage`
 - Then refreshes live from the API, with a countdown to the next round and a health indicator
 - Browse historical rounds; the selected beacon and the round you were browsing per beacon are remembered
-- Light/dark theme (follows the system, toggle in the header) and copyable URL / cURL / drand CLI commands
+- Light/dark theme (follows the system, toggle in the header) and copyable URL / cURL / wget / drand CLI commands (CLI only for drand networks); URLs are clickable
 
 ## Local run
 
