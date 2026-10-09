@@ -42,6 +42,9 @@
     <div class="layout">
       <nav class="sidebar" aria-label="Beacons">
         <section class="group">
+          <ul class="beacon-list"><li><button type="button" id="accItem" class="beacon-item" data-view="accumulator"></button></li></ul>
+        </section>
+        <section class="group">
           <h2>drand</h2>
           <label class="network">
             <span>Network</span>
@@ -56,6 +59,9 @@
         <section class="group">
           <h2>INMETRO (Brazil)</h2>
           <ul id="listInmetro" class="beacon-list"></ul>
+        </section>
+        <section class="group">
+          <button type="button" id="clearHistory" class="wide" title="Forget saved history positions and cached data for inactive networks; keeps only the most recent round of each beacon">Clear history</button>
         </section>
       </nav>
       <main id="detail" class="detail" aria-live="polite"></main>

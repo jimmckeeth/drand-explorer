@@ -35,6 +35,9 @@ const state = {
   outputMode: saved.outputMode || 'url',
   theme: saved.theme || 'auto',
   animate: saved.animate !== false,
+  view: saved.view === 'accumulator' ? 'accumulator' : 'beacon',
+  // Accumulator: `off` = deselected sources, `log` = appended entropy, `seen` = last round taken per source.
+  acc: { off: saved.acc?.off || [], log: saved.acc?.log || [], seen: saved.acc?.seen || {} },
   historyData: null,
   historyPending: null
 };
@@ -63,8 +66,8 @@ const cdKey = (url, b) => `${url}|${b.id}`;
 
 function persist() {
   try {
-    const { endpoint, data, sel, history, outputMode, theme, animate } = state;
-    localStorage.setItem(STORE_KEY, JSON.stringify({ endpoint, data, sel, history, outputMode, theme, animate }));
+    const { endpoint, data, sel, history, outputMode, theme, animate, view, acc } = state;
+    localStorage.setItem(STORE_KEY, JSON.stringify({ endpoint, data, sel, history, outputMode, theme, animate, view, acc }));
   } catch {
     /* storage unavailable or full: the app still works */
   }
@@ -131,6 +134,62 @@ function setStatus(text, cls = '') {
   statusEl.className = `statusbar ${cls}`;
 }
 
+// ---- accumulator -----------------------------------------------------------------------
+const ACC_MAX = 500; // entries kept
+const accKey = (url, b) => `${url}|${b.id}`;
+const accName = (url, b) => `${networkFor(url).kind === 'drand' ? 'drand' : networkFor(url).name.replace(' Beacon', '')}/${b.id}`;
+const accHex = () => state.acc.log.map((e) => e.hex).join('');
+
+// Append a beacon's newest randomness once per round, if its source is selected.
+function accumulate(url, b) {
+  const r = b.latest;
+  const key = accKey(url, b);
+  if (!r?.randomness || state.acc.off.includes(key) || state.acc.seen[key] === r.round) return;
+  state.acc.seen[key] = r.round;
+  state.acc.log.push({ src: accName(url, b), round: r.round, hex: r.randomness });
+  if (state.acc.log.length > ACC_MAX) state.acc.log.splice(0, state.acc.log.length - ACC_MAX);
+  persist();
+  updateAccLog();
+}
+
+function updateAccLog() {
+  const log = $('accLog');
+  if (log) {
+    const pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+    log.innerHTML = state.acc.log.length
+      ? state.acc.log.map((e) => `<span class="src">${esc(e.src)} #${e.round}</span> ${esc(e.hex)}`).join('\n')
+      : 'Waiting for new rounds from the selected sources…';
+    if (pinned) log.scrollTop = log.scrollHeight;
+  }
+  const stats = $('accStats');
+  if (stats) stats.textContent = `${state.acc.log.length} batch${state.acc.log.length === 1 ? '' : 'es'} · ${accHex().length / 2} bytes`;
+  const item = $('accItem');
+  if (item) item.querySelector('.beacon-meta').textContent = `${accHex().length / 2} bytes`;
+}
+
+function renderAccumulator() {
+  const groups = activeUrls()
+    .map((url) => {
+      const list = beaconsFor(url);
+      if (!list.length) return '';
+      const n = networkFor(url);
+      const title = n.kind === 'drand' ? 'drand' : n.name.replace(' Beacon', '');
+      return `<h4>${esc(title)}</h4>${list.map((b) => `<label><input type="checkbox" data-acc-key="${esc(accKey(url, b))}"${state.acc.off.includes(accKey(url, b)) ? '' : ' checked'} /> ${esc(b.id)}</label>`).join('')}`;
+    })
+    .join('');
+  detailEl.innerHTML = `
+    <section class="card">
+      <div class="card-head"><h3>Accumulator</h3><div class="acc-actions"><button type="button" data-action="acc-copy">Copy</button><button type="button" data-action="acc-clear">Clear</button></div></div>
+      <p class="muted" id="accStats"></p>
+      <p class="hint">Collects the randomness of every new round from the selected beacons. Copy returns the hex concatenated in arrival order.</p>
+    </section>
+    <section class="card"><h3>Sources</h3><div class="acc-sources">${groups || '<p class="muted">Loading…</p>'}</div></section>
+    <section class="card"><h3>Entropy</h3><pre id="accLog" class="acc-log"></pre></section>`;
+  updateAccLog();
+  const log = $('accLog');
+  log.scrollTop = log.scrollHeight;
+}
+
 // ---- rendering -------------------------------------------------------------------------
 function syncModeControl() {
   const cliOption = outputModeEl.querySelector('[value="cli"]');
@@ -148,6 +207,10 @@ function renderEndpoints() {
 }
 
 function renderList() {
+  const accItem = $('accItem');
+  accItem.classList.toggle('active', state.view === 'accumulator');
+  accItem.innerHTML = `<span class="dot ok"></span><span class="beacon-name">Accumulator</span><span class="beacon-meta"></span>`;
+  updateAccLog();
   const groups = [
     [state.endpoint, LISTS.drand],
     [OTHERS[0].url, LISTS.nist],
@@ -159,7 +222,7 @@ function renderList() {
       ? list
           .map((b) => {
             const h = health(b);
-            const active = url === state.sel.net && b.id === state.sel.id;
+            const active = state.view === 'beacon' && url === state.sel.net && b.id === state.sel.id;
             return `<li><button type="button" class="beacon-item${active ? ' active' : ''}" data-net="${esc(url)}" data-id="${esc(b.id)}">
         <span class="dot ${h.cls}" title="${esc(h.text)}"></span>
         <span class="beacon-name">${esc(b.id)}</span>
@@ -191,6 +254,7 @@ function endpointsBody(b) {
 }
 
 function renderDetail() {
+  if (state.view === 'accumulator') return renderAccumulator();
   const b = selectedBeacon();
   if (!b) {
     detailEl.innerHTML = '<div class="empty">Select a beacon to explore its rounds.</div>';
@@ -306,10 +370,11 @@ async function refreshLatest(url, b) {
     const cur = activeUrls().includes(url) && beaconsFor(url).find((x) => x.id === b.id);
     if (!cur) return;
     cur.latest = latest;
+    accumulate(url, cur);
     storeFor(url).savedAt = Date.now();
     persist();
     renderList();
-    if (url === state.sel.net && b.id === state.sel.id) {
+    if (state.view === 'beacon' && url === state.sel.net && b.id === state.sel.id) {
       renderDetail();
       if (prev && latest.round !== prev) detailEl.querySelectorAll('.pair .card:first-child [data-flip]').forEach(flip);
     }
@@ -390,6 +455,7 @@ async function refreshBeacons(url) {
       return results[i].status === 'fulfilled' ? { ...prev, ...results[i].value, latest: results[i].value.latest || prev.latest } : prev.id ? prev : { id };
     });
     storeFor(url).savedAt = Date.now();
+    beaconsFor(url).forEach((b) => accumulate(url, b));
     netStatus[url] = { count: ids.length };
     afterBeaconsChanged();
   } catch (error) {
@@ -455,6 +521,7 @@ endpointEl.addEventListener('change', () => {
 });
 
 function selectBeacon(url, id) {
+  state.view = 'beacon';
   state.sel = { net: url, id };
   state.historyData = null;
   state.historyPending = null;
@@ -463,11 +530,30 @@ function selectBeacon(url, id) {
 }
 
 sidebarEl.addEventListener('click', (e) => {
+  if (e.target.closest('[data-view="accumulator"]')) {
+    state.view = 'accumulator';
+    persist();
+    renderAll();
+    return;
+  }
+  if (e.target.closest('#clearHistory')) return clearHistory();
   const btn = e.target.closest('[data-id]');
   if (!btn) return;
   selectBeacon(btn.dataset.net, btn.dataset.id);
   if (window.matchMedia('(max-width: 800px)').matches) detailEl.scrollIntoView({ behavior: 'smooth' });
 });
+
+// Forget browsing positions (every beacon follows its latest round again) and cached data for
+// networks that are not active, leaving just the most recent round of each visible beacon.
+function clearHistory() {
+  state.history = {};
+  state.historyData = null;
+  state.historyPending = null;
+  for (const url of Object.keys(state.data)) if (!activeUrls().includes(url)) delete state.data[url];
+  persist();
+  renderAll();
+  setStatus('History cleared — showing only the most recent rounds.', 'ok');
+}
 
 // Up/Down cycle through every listed beacon (drand, then NIST, then INMETRO), wrapping around.
 function cycleBeacon(step) {
@@ -494,6 +580,23 @@ detailEl.addEventListener('click', async (e) => {
     return;
   }
   const action = e.target.closest('[data-action]')?.dataset.action;
+  if (action === 'acc-clear') {
+    state.acc.log = [];
+    persist();
+    updateAccLog();
+    return;
+  }
+  if (action === 'acc-copy') {
+    const btn = e.target.closest('[data-action]');
+    try {
+      await navigator.clipboard.writeText(accHex());
+      btn.textContent = 'Copied';
+    } catch {
+      btn.textContent = 'Denied';
+    }
+    setTimeout(() => (btn.textContent = 'Copy'), 1000);
+    return;
+  }
   if (!action || !b) return;
   const current = Number($('historyInput').value) || b.latest?.round || 1;
   if (action === 'prev') setHistoryRound(b, current - 1);
@@ -510,6 +613,19 @@ detailEl.addEventListener('keydown', (e) => {
 });
 
 detailEl.addEventListener('change', (e) => {
+  const key = e.target.dataset?.accKey;
+  if (key) {
+    const off = state.acc.off.filter((k) => k !== key);
+    if (!e.target.checked) off.push(key);
+    state.acc.off = off;
+    persist();
+    if (e.target.checked) {
+      const [url, id] = [key.slice(0, key.lastIndexOf('|')), key.slice(key.lastIndexOf('|') + 1)];
+      const b = beaconsFor(url).find((x) => x.id === id);
+      if (b) accumulate(url, b);
+    }
+    return;
+  }
   if (e.target.id === 'animateToggle') {
     state.animate = e.target.checked;
     applyAnimate();
@@ -545,6 +661,7 @@ document.addEventListener('keydown', (e) => {
     cycleBeacon(e.key === 'ArrowDown' ? 1 : -1);
     return;
   }
+  if (state.view === 'accumulator') return;
   let target;
   if (e.key === 'ArrowLeft' && !e.altKey) target = cur - 1;
   else if (e.key === 'ArrowRight' && !e.altKey) target = cur + 1;
