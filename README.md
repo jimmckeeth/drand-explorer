@@ -35,8 +35,7 @@ node scripts/build-cache.mjs # optional: refresh data/beacons.json
 ## GitHub Pages
 
 In **Settings → Pages**, set the source to **GitHub Actions**. `.github/workflows/pages.yml` runs `scripts/build-cache.mjs`
-and deploys on every push to `main`, hourly, and on manual dispatch. All asset paths are relative, so it works under
-`https://<user>.github.io/entropy-beacon-explorer/`.
+and deploys on every push to `main`, hourly, and on manual dispatch.
 
 ## Copyright and License
 
